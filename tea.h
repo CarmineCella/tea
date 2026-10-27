@@ -60,10 +60,66 @@ inline std::ostream& print(const List& n, std::ostream& out) {
     }
     return out;
 }
+
+// reader
 inline bool parse_number(const std::string& s, double& value) {
     std::istringstream in(s);
     return bool(in >> value) && in.eof();
 }
+inline List read(const std::string& line, const OpTable& ops) {
+    std::stringstream lstream(line);
+    List command;
+    for (std::string token; lstream >> token;) {
+        double val = 0;
+        if (parse_number (token, val)) command.push_back(std::make_shared<Cell>(Array{val}));
+        else {
+            auto p = ops.find(token);
+            if (p != ops.end()) command.push_back(std::make_shared<Cell>(p->second));
+            else command.push_back(std::make_shared<Cell>(token));
+        }
+    }
+    return command;
+}
+
+// evaluator
+inline CellPtr resolve(const CellPtr& p, const Env& env) {
+    if (is<Array>(p)) return p;
+    const auto& name = as<std::string>(p);
+    auto found = env.find(name);
+    if (found == env.end()) throw std::runtime_error("invalid identifier " + name);
+    return found->second;
+}
+inline List eval(const List& command, Env& env) {
+    // out1 out2 ... opcode in1 in2 ...
+    List outputs;
+    if (command.size() == 1 && !is<Opcode>(command[0])) return {resolve(command[0], env)};
+    for (size_t i = 0; i < command.size(); ++i) {
+        if (is<Array>(command[i])) {
+            throw std::runtime_error("expected symbol or opcode");
+        } else if (is<std::string>(command[i])) { // symbol
+            outputs.push_back(command[i]); // variable
+            continue;
+        } else if (is<Opcode>(command[i])) { // opcode
+            List params;
+            for (size_t k = i + 1; k < command.size(); ++k) {
+                params.push_back(resolve(command[k], env));
+            }
+            Opcode op = as<Opcode>(command[i]);
+            if (params.size() < op.min || (op.max >= 0 && params.size() > size_t(op.max)) || (!outputs.empty() && outputs.size() != op.outputs)) {
+                throw std::runtime_error("parameters mismatch");
+            }
+            if (!op.fn) throw std::runtime_error("invalid opcode");
+            List res = op.fn(params);
+            for (const auto& value : res) if (!is<Array>(value)) throw std::runtime_error("invalid opcode result");
+            if (res.size() != op.outputs) throw std::runtime_error("outputs mismatch");
+            for (size_t j = 0; j < outputs.size(); ++j) env[as<std::string>(outputs[j])] = res[j];
+            return res;
+        }
+    }
+    throw std::runtime_error("opcode expected");
+}
+
+// opcode
 inline double scalar(const CellPtr& p) {
     if (!is<Array>(p) || as<Array>(p).size() != 1) throw std::runtime_error("expected a scalar");
     return as<Array>(p)[0];
@@ -92,71 +148,6 @@ template<class Op, class Result> Result broadcast(const Array& x, const Array& y
     if (y.size() == 1) return Op()(x, y[0]);
     throw std::runtime_error("incompatible sizes " + std::to_string(x.size()) + " and " + std::to_string(y.size()));
 }
-
-// reader
-inline List read(const std::string& line, const OpTable& ops) {
-    std::stringstream lstream(line);
-    List command;
-    for (std::string token; lstream >> token;) {
-        double val = 0;
-        if (parse_number (token, val)) command.push_back(std::make_shared<Cell>(Array{val}));
-        else {
-            auto p = ops.find(token);
-            if (p != ops.end()) command.push_back(std::make_shared<Cell>(p->second));
-            else command.push_back(std::make_shared<Cell>(token));
-        }
-    }
-    return command;
-}
-
-// evaluator
-inline List eval(const List& command, Env& env) {
-    // out1 out2 ... opcode in1 in2 ...
-    List outputs;
-    for (size_t i = 0; i < command.size(); ++i) {
-        if (command.size() == 1) { // single-variable
-            if (is<Array>(command[0])) return {command[0]};
-            if (is<std::string>(command[0])) {
-                const auto& name = as<std::string>(command[0]);
-                auto p = env.find(name);
-                if (p == env.end()) throw std::runtime_error("invalid identifier " + name);
-                return {p->second};
-            }
-        }
-        if (is<Array>(command[i])) {
-            throw std::runtime_error("expected symbol or opcode");
-        } else if (is<std::string>(command[i])) { // symbol
-            outputs.push_back(command[i]); // variable
-            continue;
-        } else if (is<Opcode>(command[i])) { // opcode
-            List params;
-            for (size_t k = i + 1; k < command.size(); ++k) {
-                if (is<std::string>(command[k])) {
-                    auto v = env.find(std::get<std::string>(*command[k]));
-                    if (v != env.end()) params.push_back(v->second);
-                    else throw std::runtime_error("invalid identifier " + std::get<std::string>(*command[k]));
-                } else if (is<Array>(command[k])) {
-                    params.push_back(command[k]); // number
-                } else {
-                    throw std::runtime_error("invalid syntax");
-                }
-            }
-            Opcode op = as<Opcode>(command[i]);
-            if (params.size() < op.min || (op.max >= 0 && params.size() > size_t(op.max)) || (!outputs.empty() && outputs.size() != op.outputs)) {
-                throw std::runtime_error("parameters mismatch");
-            }
-            if (!op.fn) throw std::runtime_error("invalid opcode");
-            List res = op.fn(params);
-            for (const auto& value : res) if (!is<Array>(value)) throw std::runtime_error("invalid opcode result");
-            if (res.size() != op.outputs) throw std::runtime_error("outputs mismatch");
-            for (size_t j = 0; j < outputs.size(); ++j) env[as<std::string>(outputs[j])] = res[j];
-            return res;
-        }
-    }
-    throw std::runtime_error("opcode expected");
-}
-
-// opcode
 inline List make(const List& in) {
     if (in.size() > LIMIT) throw std::runtime_error("array too large");
     Array a(in.size());
@@ -167,7 +158,7 @@ inline List make(const List& in) {
 }
 template<class Op, int Unit> List arith(const List& in) { // r add a b c ...; r sub x is (- Unit x): 0 for + -, 1 for * /
     List out;
-    if (in.size() == 1) out.push_back(std::make_shared<Cell>(std::move(broadcast<Op, Array>(Array{double(Unit)}, as<Array>(in[0])))));
+    if (in.size() == 1) out.push_back(std::make_shared<Cell>(broadcast<Op, Array>(Array{double(Unit)}, as<Array>(in[0]))));
     else {
         if (in.size() < 2) throw std::runtime_error("invalid number of arguments");
         Array r = broadcast<Op, Array>(as<Array>(in[0]), as<Array>(in[1]));
@@ -177,7 +168,6 @@ template<class Op, int Unit> List arith(const List& in) { // r add a b c ...; r 
     return out;
 }
 template<double (*F)(double)> List unary(const List& a) {
-    if (a.size() < 1) throw std::runtime_error("invalid number of arguments");
     return {std::make_shared<Cell>(Array(as<Array>(a[0]).apply(F)))};
 }
 inline List aslice(const List& a) {
@@ -285,7 +275,7 @@ inline void init(OpTable& ops) {
     ops["exp"] = Opcode{unary<std::exp>, 1, 1, 1}; ops["log"] = Opcode{unary<std::log>, 1, 1, 1};
     ops["sin"] = Opcode{unary<std::sin>, 1, 1, 1}; ops["cos"] = Opcode{unary<std::cos>, 1, 1, 1};
     ops["tan"] = Opcode{unary<std::tan>, 1, 1, 1}; ops["atan"] = Opcode{unary<std::atan>, 1, 1, 1};
-    ops["floor"] = Opcode{unary<std::floor>, 1, 1, 1};
+    ops["floor"] = Opcode{unary<std::floor>, 1, 1, 1}; ops["diff"] = Opcode{diff, 1, 1, 1};
     ops["range"] = Opcode{range, 1, 3, 1}; ops["cat"] = Opcode{cat, 2, -1, 1}; ops["slice"] = Opcode{aslice, 3, 4, 1};
     ops["len"] = Opcode{len, 1, 1, 1}; ops["fill"] = Opcode{fill, 2, 2, 1};
     ops["gather"] = Opcode{gather, 2, 2, 1}; ops["put"] = Opcode{put, 3, 3, 1};
@@ -293,7 +283,7 @@ inline void init(OpTable& ops) {
     ops["eq"] = Opcode{compare<std::equal_to<>>, 2, 2, 1}; ops["ne"] = Opcode{compare<std::not_equal_to<>>, 2, 2, 1};
     ops["lt"] = Opcode{compare<std::less<>>, 2, 2, 1}; ops["le"] = Opcode{compare<std::less_equal<>>, 2, 2, 1};
     ops["gt"] = Opcode{compare<std::greater<>>, 2, 2, 1}; ops["ge"] = Opcode{compare<std::greater_equal<>>, 2, 2, 1};
-    ops["where"] = Opcode{where, 3, 3, 1}; ops["diff"] = Opcode{diff, 1, 1, 1};
+    ops["where"] = Opcode{where, 3, 3, 1}; 
 }
 inline void repl(Env& env, OpTable& ops) {
     std::string line;
