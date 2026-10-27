@@ -1,4 +1,5 @@
 // tea.h
+
 #ifndef TEA_H
 #define TEA_H
 #include <algorithm>
@@ -15,6 +16,7 @@
 #include <valarray>
 #include <variant>
 #include <vector>
+
 namespace tea {
 using std::size_t;
 
@@ -112,6 +114,15 @@ inline List eval(const List& command, Env& env) {
     // out1 out2 ... opcode in1 in2 ...
     List outputs;
     for (size_t i = 0; i < command.size(); ++i) {
+        if (command.size() == 1) { // single-variable
+            if (is<Array>(command[0])) return {command[0]};
+            if (is<std::string>(command[0])) {
+                const auto& name = as<std::string>(command[0]);
+                auto p = env.find(name);
+                if (p == env.end()) throw std::runtime_error("invalid identifier " + name);
+                return {p->second};
+            }
+        }
         if (is<Array>(command[i])) {
             throw std::runtime_error("expected symbol or opcode");
         } else if (is<std::string>(command[i])) { // symbol
@@ -131,14 +142,14 @@ inline List eval(const List& command, Env& env) {
                 }
             }
             Opcode op = as<Opcode>(command[i]);
-            if (params.size() < op.min || (op.max >= 0 && params.size() > size_t(op.max)) || outputs.size() != op.outputs) {
+            if (params.size() < op.min || (op.max >= 0 && params.size() > size_t(op.max)) || (!outputs.empty() && outputs.size() != op.outputs)) {
                 throw std::runtime_error("parameters mismatch");
             }
             if (!op.fn) throw std::runtime_error("invalid opcode");
             List res = op.fn(params);
             for (const auto& value : res) if (!is<Array>(value)) throw std::runtime_error("invalid opcode result");
-            if (res.size() != outputs.size()) throw std::runtime_error("outputs mismatch");
-            for (size_t j = 0; j < res.size(); ++j) env[std::get<std::string>(*outputs[j])] = res[j];
+            if (res.size() != op.outputs) throw std::runtime_error("outputs mismatch");
+            for (size_t j = 0; j < outputs.size(); ++j) env[as<std::string>(outputs[j])] = res[j];
             return res;
         }
     }
@@ -287,7 +298,7 @@ inline void init(OpTable& ops) {
 inline void repl(Env& env, OpTable& ops) {
     std::string line;
     size_t lineno = 0;
-    while (std::cout << ">> " << std::flush, std::getline(std::cin, line)) {
+    while (std::cout << lineno +1 << " >> " << std::flush, std::getline(std::cin, line)) {
         ++lineno;
         try {
             if (line.find_first_not_of(" \t\r") == std::string::npos) continue;
